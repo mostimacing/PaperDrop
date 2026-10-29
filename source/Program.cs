@@ -16,7 +16,6 @@ namespace PaperDrop
     internal static class Program
     {
         [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
-
         [STAThread]
         private static void Main()
         {
@@ -24,19 +23,16 @@ namespace PaperDrop
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
-            {
-                MessageBox.Show("操作未完成：" + e.Exception.Message, "PaperDrop", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            };
+            { MessageBox.Show("操作未完成：" + e.Exception.Message, "PaperDrop", MessageBoxButtons.OK, MessageBoxIcon.Information); };
             Application.Run(new MainWindow());
         }
     }
 
     internal sealed class MainWindow : Form
     {
-        private static readonly Color Ink = Color.FromArgb(28, 43, 54);
-        private static readonly Color Muted = Color.FromArgb(101, 116, 128);
-        private static readonly Color Accent = Color.FromArgb(18, 111, 94);
-        private static readonly Color Border = Color.FromArgb(221, 229, 232);
+        private static readonly Color Ink = UiTheme.Ink;
+        private static readonly Color Muted = UiTheme.Muted;
+        private static readonly Color Accent = UiTheme.Accent;
         private readonly DownloadEngine downloader = new DownloadEngine();
         private readonly CitationEngine citer = new CitationEngine();
         private readonly TextBox links = new TextBox();
@@ -47,190 +43,247 @@ namespace PaperDrop
         private readonly Label summary = new Label();
         private readonly Label status = new Label();
         private readonly Label citationHint = new Label();
+        private readonly Label inputCount = new Label();
+        private readonly Label taskCount = new Label();
+        private readonly Panel viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        private TableLayoutPanel rootLayout;
+        private float displayScale = 1F;
+        private bool arrangingCanvas;
         private readonly ProgressBar progress = new ProgressBar();
-        private readonly TabControl tabs = new TabControl();
-        private readonly Button downloadButton;
-        private readonly Button citeButton;
-        private readonly Button cancelButton;
-        private readonly Button retryButton;
-        private readonly Button browseButton;
-        private readonly Button pasteButton;
-        private readonly Button exampleButton;
-        private readonly Button copyButton;
-        private readonly Button saveButton;
+        private readonly Panel tasksView = new Panel();
+        private readonly Panel citationsView = new Panel();
+        private readonly EmptyState taskEmpty = new EmptyState { Heading = "还没有任务", Hint = "添加论文链接，开始下载或生成引用。" };
+        private readonly EmptyState citationEmpty = new EmptyState { Heading = "引用会显示在这里", Hint = "支持 BibTeX、\\bibitem 和 Overleaf 示例。", IsCitation = true };
+        private readonly ActionButton taskTab = MakeButton("任务", ButtonTone.Segment);
+        private readonly ActionButton citationTab = MakeButton("引用", ButtonTone.Segment);
+        private readonly ActionButton downloadButton = MakeButton("下载 PDF", ButtonTone.Primary);
+        private readonly ActionButton citeButton = MakeButton("生成 LaTeX 引用", ButtonTone.Secondary);
+        private readonly ActionButton cancelButton = MakeButton("取消", ButtonTone.Quiet);
+        private readonly ActionButton retryButton = MakeButton("重试失败项", ButtonTone.Quiet);
+        private readonly ActionButton browseButton = MakeButton("选择", ButtonTone.Secondary);
+        private readonly ActionButton pasteButton = MakeButton("粘贴", ButtonTone.Quiet);
+        private readonly ActionButton exampleButton = MakeButton("示例", ButtonTone.Quiet);
+        private readonly ActionButton copyButton = MakeButton("复制", ButtonTone.Secondary);
+        private readonly ActionButton saveButton = MakeButton("导出", ButtonTone.Secondary);
+        private readonly ActionButton detailsButton = MakeButton("查看详情", ButtonTone.Quiet);
         private readonly List<CitationResult> citations = new List<CitationResult>();
         private readonly List<string> failed = new List<string>();
         private CancellationTokenSource cancellation;
         private bool busy, closeAfterCancel, lastWasCitation;
         private int runId;
-        private readonly ToolTip tooltips = new ToolTip { AutoPopDelay = 20000, InitialDelay = 350 };
+        private readonly ToolTip tooltips = new ToolTip { AutoPopDelay = 20000, InitialDelay = 400 };
 
         public MainWindow()
         {
-            Text = "PaperDrop · 论文下载与 LaTeX 引用";
+            Text = "PaperDrop";
             Font = new Font("Microsoft YaHei UI", 9F);
-            BackColor = Color.FromArgb(243, 246, 247);
-            ForeColor = Ink;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(1000, 760);
-            MinimumSize = new Size(860, 720);
+            BackColor = UiTheme.Canvas; ForeColor = Ink;
+            AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(1100, 720); MinimumSize = new Size(940, 630);
             StartPosition = FormStartPosition.CenterScreen;
+            KeyPreview = true;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26, 16, 26, 18), ColumnCount = 1, RowCount = 5 };
+            var root = MakeLayout(1, 3);
+            rootLayout = root; root.Dock = DockStyle.None;
+            root.Padding = new Padding(24, 16, 24, 12);
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 238));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-            Controls.Add(root);
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            Controls.Add(viewport); viewport.Controls.Add(root);
 
-            var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-            header.Controls.Add(new BrandMark { Location = new Point(0, 10), Size = new Size(50, 50) });
-            header.Controls.Add(MakeLabel("PaperDrop", 67, 3, 240, 38, 23F, true, Ink));
-            header.Controls.Add(MakeLabel("让论文与引用，一起归档。", 69, 44, 400, 26, 10F, false, Muted));
-            var badge = MakeLabel("arXiv   /   INSPIRE   /   DOI", 615, 25, 328, 28, 10F, true, Accent);
-            badge.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            badge.TextAlign = ContentAlignment.MiddleRight;
-            header.Controls.Add(badge);
+            var header = MakeLayout(4, 1);
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 166));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+            header.Controls.Add(new BrandMark { Width = 44, Height = 44, Margin = new Padding(0, 4, 0, 0) }, 0, 0);
+            var wordmark = LabelFor("PaperDrop", 22F, true);
+            wordmark.Font = new Font("Segoe UI Semibold", 22F, FontStyle.Bold);
+            wordmark.Margin = new Padding(0, 0, 0, 16);
+            header.Controls.Add(wordmark, 1, 0);
+            var descriptor = LabelFor("论文下载与引用", 9F, false); descriptor.ForeColor = Muted; descriptor.Margin = new Padding(4, 4, 0, 17);
+            header.Controls.Add(descriptor, 2, 0);
+            var help = MakeButton("使用帮助", ButtonTone.Quiet); help.Margin = new Padding(0, 4, 0, 22);
+            header.Controls.Add(help, 3, 0); help.Click += delegate { ShowHelp(); };
             root.Controls.Add(header, 0, 0);
 
-            var inputCard = new CardPanel { Dock = DockStyle.Fill, Padding = new Padding(18, 12, 18, 14), Margin = Padding.Empty };
-            var inputLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
+            var body = MakeLayout(3, 1);
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 318));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.Controls.Add(body, 0, 1);
+            var inputCard = new Surface { Dock = DockStyle.Fill, Padding = new Padding(20), Margin = Padding.Empty };
+            body.Controls.Add(inputCard, 0, 0);
+            var inputLayout = MakeLayout(1, 11); inputLayout.BackColor = Color.White;
             inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            inputLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-            inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
-            inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            foreach (int height in new[] { 38, -1, 29, 38, 38, 34, 18, 44, 10, 44, 26 })
+                inputLayout.RowStyles.Add(height < 0 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.Absolute, height));
             inputCard.Controls.Add(inputLayout);
-            var inputTitle = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+
+            var inputTitle = MakeLayout(3, 1); inputTitle.BackColor = Color.White;
             inputTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            inputTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-            inputTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-            inputTitle.Controls.Add(new Label { Text = "01   粘贴论文链接", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font, FontStyle.Bold) }, 0, 0);
-            pasteButton = MakeButton("粘贴", false);
-            exampleButton = MakeButton("填入示例", false);
-            inputTitle.Controls.Add(pasteButton, 1, 0);
-            inputTitle.Controls.Add(exampleButton, 2, 0);
+            inputTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+            inputTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+            inputTitle.Controls.Add(LabelFor("论文链接", 11F, true), 0, 0);
+            inputTitle.Controls.Add(exampleButton, 1, 0); inputTitle.Controls.Add(pasteButton, 2, 0);
             inputLayout.Controls.Add(inputTitle, 0, 0);
-            links.Multiline = true;
-            links.ScrollBars = ScrollBars.Vertical;
-            links.AcceptsReturn = true;
-            links.Dock = DockStyle.Fill;
-            links.BorderStyle = BorderStyle.FixedSingle;
-            links.Font = new Font("Consolas", 10F);
-            links.MaxLength = 65536;
-            links.AccessibleName = "论文链接，每行一篇";
-            links.BackColor = Color.FromArgb(250, 252, 252);
-            inputLayout.Controls.Add(links, 0, 1);
-            inputLayout.Controls.Add(new Label { Text = "每行一篇。支持 arXiv 编号、INSPIRE 论文页、DOI，以及 PDF 直链（仅下载）。", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Font = new Font(Font.FontFamily, 8.5F) }, 0, 2);
-            inputLayout.Controls.Add(new Label { Text = "02   保存文件夹", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font, FontStyle.Bold) }, 0, 3);
-            var folderRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+            var linkFrame = new Surface { Dock = DockStyle.Fill, CornerRadius = 8, SurfaceColor = UiTheme.Soft, BackColor = UiTheme.Soft, Padding = new Padding(12), Margin = Padding.Empty };
+            links.Multiline = true; links.ScrollBars = ScrollBars.Vertical; links.AcceptsReturn = true;
+            links.Dock = DockStyle.Fill; links.BorderStyle = BorderStyle.None;
+            links.Font = new Font("Consolas", 10F); links.MaxLength = 65536;
+            links.BackColor = UiTheme.Soft; links.ForeColor = Ink; links.AccessibleName = "论文链接，每行一篇";
+            linkFrame.Controls.Add(links);
+            var placeholder = new Label { Text = "粘贴论文链接或编号\r\n每行一篇", Dock = DockStyle.Fill, BackColor = UiTheme.Soft, ForeColor = Muted, Padding = new Padding(1, 2, 0, 0), Font = new Font(Font.FontFamily, 9.5F) };
+            linkFrame.Controls.Add(placeholder); placeholder.BringToFront();
+            placeholder.Click += delegate { links.Focus(); };
+            links.Enter += delegate { placeholder.Visible = false; };
+            links.Leave += delegate { placeholder.Visible = links.TextLength == 0; };
+            links.TextChanged += delegate
+            {
+                int count = links.Lines.Count(line => !String.IsNullOrWhiteSpace(line));
+                inputCount.Text = count == 0 ? "arXiv · INSPIRE · DOI · PDF" : count + " 篇论文";
+                placeholder.Visible = links.TextLength == 0 && !links.Focused;
+            };
+            inputLayout.Controls.Add(linkFrame, 0, 1);
+            inputCount.Text = "arXiv · INSPIRE · DOI · PDF"; inputCount.ForeColor = Muted;
+            inputCount.Font = new Font(Font.FontFamily, 8F); inputCount.Dock = DockStyle.Fill; inputCount.TextAlign = ContentAlignment.MiddleLeft;
+            inputLayout.Controls.Add(inputCount, 0, 2);
+            inputLayout.Controls.Add(LabelFor("保存位置", 10F, true), 0, 3);
+            var folderRow = MakeLayout(3, 1); folderRow.BackColor = Color.White;
             folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            folder.Dock = DockStyle.Fill;
-            folder.Margin = new Padding(3, 5, 8, 3);
-            folder.AccessibleName = "保存文件夹";
-            folder.Text = LoadFolder();
-            browseButton = MakeButton("选择文件夹", false);
-            var openFolder = MakeButton("打开文件夹", false);
-            folderRow.Controls.Add(folder, 0, 0);
-            folderRow.Controls.Add(browseButton, 1, 0);
-            folderRow.Controls.Add(openFolder, 2, 0);
+            folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 8));
+            folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+            var folderFrame = new Surface { Dock = DockStyle.Fill, CornerRadius = 8, Padding = new Padding(9, 9, 8, 6), Margin = Padding.Empty };
+            folder.Dock = DockStyle.Fill; folder.BorderStyle = BorderStyle.None; folder.Text = LoadFolder(); folder.AccessibleName = "保存文件夹";
+            folderFrame.Controls.Add(folder); folderRow.Controls.Add(folderFrame, 0, 0); folderRow.Controls.Add(browseButton, 2, 0);
             inputLayout.Controls.Add(folderRow, 0, 4);
-            root.Controls.Add(inputCard, 0, 1);
+            var folderTools = MakeLayout(2, 1); folderTools.BackColor = Color.White;
+            folderTools.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); folderTools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 98));
+            var openFolder = MakeButton("打开文件夹", ButtonTone.Quiet); folderTools.Controls.Add(openFolder, 1, 0);
+            inputLayout.Controls.Add(folderTools, 0, 5);
+            var divider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = UiTheme.Border, Margin = new Padding(0, 6, 0, 0) };
+            inputLayout.Controls.Add(divider, 0, 6);
+            downloadButton.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
+            inputLayout.Controls.Add(downloadButton, 0, 7);
+            inputLayout.Controls.Add(citeButton, 0, 9);
+            tooltips.SetToolTip(downloadButton, "下载到所选文件夹（Ctrl + Enter）");
+            tooltips.SetToolTip(citeButton, "生成 BibTeX 或 LaTeX 引用（Ctrl + Shift + Enter）");
+            tooltips.SetToolTip(inputCount, "支持 arXiv 编号、INSPIRE 单篇论文链接、DOI，以及 PDF 直链。PDF 直链仅支持下载。");
+            tooltips.SetToolTip(folder, folder.Text);
+            folder.TextChanged += delegate { tooltips.SetToolTip(folder, folder.Text); };
 
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 8), Margin = Padding.Empty, WrapContents = false };
-            downloadButton = MakeButton("下载 PDF", true); downloadButton.Width = 145;
-            citeButton = MakeButton("生成 LaTeX 引用", false); citeButton.Width = 170;
-            cancelButton = MakeButton("取消", false); cancelButton.Width = 85; cancelButton.Enabled = false;
-            retryButton = MakeButton("重试失败项", false); retryButton.Width = 120; retryButton.Enabled = false;
-            foreach (var button in new[] { downloadButton, citeButton, cancelButton, retryButton }) { button.Dock = DockStyle.None; button.Height = 36; button.Margin = new Padding(0, 0, 10, 0); actions.Controls.Add(button); }
-            root.Controls.Add(actions, 0, 2);
+            var workspace = new Surface { Dock = DockStyle.Fill, Padding = new Padding(20), Margin = Padding.Empty };
+            body.Controls.Add(workspace, 2, 0);
+            var workspaceLayout = MakeLayout(1, 3); workspaceLayout.BackColor = Color.White;
+            workspaceLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            workspaceLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+            workspaceLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            workspaceLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 5));
+            workspace.Controls.Add(workspaceLayout);
+            var workspaceHeader = MakeLayout(5, 1); workspaceHeader.BackColor = Color.White;
+            workspaceHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 164));
+            workspaceHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            workspaceHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
+            workspaceHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68));
+            workspaceHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
+            var switcher = new Surface { Dock = DockStyle.Fill, CornerRadius = 9, SurfaceColor = UiTheme.Soft, BackColor = UiTheme.Soft, Padding = new Padding(3), Margin = new Padding(0, 0, 0, 12) };
+            var switchLayout = MakeLayout(2, 1); switchLayout.BackColor = UiTheme.Soft;
+            switchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); switchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            switchLayout.Controls.Add(taskTab, 0, 0); switchLayout.Controls.Add(citationTab, 1, 0); switcher.Controls.Add(switchLayout);
+            workspaceHeader.Controls.Add(switcher, 0, 0);
+            retryButton.Margin = new Padding(0, 0, 0, 12); cancelButton.Margin = new Padding(0, 0, 0, 12);
+            retryButton.Enabled = false; cancelButton.Enabled = false;
+            workspaceHeader.Controls.Add(retryButton, 2, 0); workspaceHeader.Controls.Add(cancelButton, 3, 0);
+            workspaceLayout.Controls.Add(workspaceHeader, 0, 0);
+            var views = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Margin = Padding.Empty };
+            tasksView.Dock = citationsView.Dock = DockStyle.Fill; tasksView.BackColor = citationsView.BackColor = Color.White;
+            views.Controls.Add(tasksView); views.Controls.Add(citationsView); workspaceLayout.Controls.Add(views, 0, 1);
 
-            tabs.Dock = DockStyle.Fill;
-            tabs.Margin = Padding.Empty;
-            tabs.Padding = new Point(16, 7);
-            var downloadsTab = new TabPage("下载列表") { BackColor = Color.White, Padding = new Padding(12) };
-            var citationsTab = new TabPage("LaTeX 引用") { BackColor = Color.White, Padding = new Padding(12) };
-            tabs.TabPages.Add(downloadsTab); tabs.TabPages.Add(citationsTab);
-            root.Controls.Add(tabs, 0, 3);
-            BuildGrid();
-            downloadsTab.Controls.Add(grid);
-            var downloadTip = new Label { Dock = DockStyle.Bottom, Height = 26, Text = "双击已完成的条目打开 PDF；选中失败条目可查看完整原因。", TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Font = new Font(Font.FontFamily, 8.5F) };
-            downloadsTab.Controls.Add(downloadTip);
+            var taskLayout = MakeLayout(1, 2); taskLayout.BackColor = Color.White;
+            taskLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            taskLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); taskLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            tasksView.Controls.Add(taskLayout);
+            var gridHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Margin = Padding.Empty };
+            BuildGrid(); gridHost.Controls.Add(grid); gridHost.Controls.Add(taskEmpty); taskEmpty.BringToFront();
+            taskLayout.Controls.Add(gridHost, 0, 0);
+            var taskFooter = MakeLayout(2, 1); taskFooter.BackColor = Color.White;
+            taskFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); taskFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+            taskCount.Text = "0 个任务"; taskCount.ForeColor = Muted; taskCount.Font = new Font(Font.FontFamily, 8F); taskCount.Dock = DockStyle.Fill; taskCount.TextAlign = ContentAlignment.MiddleLeft;
+            taskFooter.Controls.Add(taskCount, 0, 0); detailsButton.Enabled = false; taskFooter.Controls.Add(detailsButton, 1, 0);
+            taskLayout.Controls.Add(taskFooter, 0, 1);
 
-            var citationLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            var citationLayout = MakeLayout(1, 3); citationLayout.BackColor = Color.White;
             citationLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            citationLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-            citationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            citationLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            var citationToolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Margin = Padding.Empty };
-            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 215));
-            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            citationFormat.DropDownStyle = ComboBoxStyle.DropDownList;
-            citationFormat.Dock = DockStyle.Fill;
-            citationFormat.Items.AddRange(new object[] { "BibTeX · references.bib", "\\bibitem · 带标题超链接", "Overleaf 使用示例" });
-            citationFormat.SelectedIndex = 0;
-            citationFormat.AccessibleName = "引用格式";
-            copyButton = MakeButton("复制内容", false); copyButton.Enabled = false;
-            saveButton = MakeButton("导出文件", false); saveButton.Enabled = false;
-            citationToolbar.Controls.Add(citationFormat, 0, 0);
-            citationToolbar.Controls.Add(copyButton, 2, 0);
-            citationToolbar.Controls.Add(saveButton, 3, 0);
+            citationLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); citationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); citationLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            citationsView.Controls.Add(citationLayout);
+            var citationToolbar = MakeLayout(4, 1); citationToolbar.BackColor = Color.White;
+            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 10));
+            citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62)); citationToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+            citationFormat.DropDownStyle = ComboBoxStyle.DropDownList; citationFormat.Dock = DockStyle.Fill; citationFormat.Margin = new Padding(0, 4, 0, 0);
+            citationFormat.FlatStyle = FlatStyle.Flat; citationFormat.BackColor = UiTheme.Soft;
+            citationFormat.Items.AddRange(new object[] { "BibTeX", "\\bibitem", "Overleaf 示例" }); citationFormat.SelectedIndex = 0; citationFormat.AccessibleName = "引用格式";
+            copyButton.Enabled = saveButton.Enabled = false; copyButton.Margin = new Padding(0, 0, 6, 8); saveButton.Margin = new Padding(0, 0, 0, 8);
+            citationToolbar.Controls.Add(citationFormat, 0, 0); citationToolbar.Controls.Add(copyButton, 2, 0); citationToolbar.Controls.Add(saveButton, 3, 0);
             citationLayout.Controls.Add(citationToolbar, 0, 0);
-            citationText.Multiline = true;
-            citationText.ReadOnly = true;
-            citationText.ScrollBars = ScrollBars.Both;
-            citationText.WordWrap = false;
-            citationText.Dock = DockStyle.Fill;
-            citationText.BorderStyle = BorderStyle.FixedSingle;
-            citationText.BackColor = Color.FromArgb(249, 251, 252);
-            citationText.Font = new Font("Consolas", 10F);
-            citationText.AccessibleName = "生成的 LaTeX 引用";
-            citationText.Text = "在上方输入论文链接，然后点击「生成 LaTeX 引用」。\r\n\r\nBibTeX 可保存为 references.bib；\\bibitem 可直接加入参考文献列表。\r\n生成后可切换至「Overleaf 使用示例」，查看带超链接的完整用法。";
-            citationLayout.Controls.Add(citationText, 0, 1);
-            citationHint.Dock = DockStyle.Fill;
-            citationHint.ForeColor = Muted;
-            citationHint.Font = new Font(Font.FontFamily, 8.5F);
-            citationHint.TextAlign = ContentAlignment.MiddleLeft;
-            citationHint.Text = "引用由站点元数据生成；PDF 直链无法可靠提取作者与标题。";
-            citationLayout.Controls.Add(citationHint, 0, 2);
-            citationsTab.Controls.Add(citationLayout);
+            var editorFrame = new Surface { Dock = DockStyle.Fill, CornerRadius = 8, Padding = new Padding(12), SurfaceColor = UiTheme.Soft, BackColor = UiTheme.Soft, Margin = Padding.Empty };
+            citationText.Multiline = true; citationText.ReadOnly = true; citationText.ScrollBars = ScrollBars.Both; citationText.WordWrap = false;
+            citationText.Dock = DockStyle.Fill; citationText.BorderStyle = BorderStyle.None; citationText.BackColor = UiTheme.Soft; citationText.ForeColor = Color.FromArgb(43, 65, 63);
+            citationText.Font = new Font("Consolas", 10F); citationText.AccessibleName = "生成的 LaTeX 引用";
+            editorFrame.Controls.Add(citationText); citationEmpty.BackColor = UiTheme.Soft; editorFrame.Controls.Add(citationEmpty); citationEmpty.BringToFront();
+            citationLayout.Controls.Add(editorFrame, 0, 1);
+            citationHint.Dock = DockStyle.Fill; citationHint.ForeColor = Muted; citationHint.Font = new Font(Font.FontFamily, 8F); citationHint.TextAlign = ContentAlignment.MiddleLeft; citationHint.AutoEllipsis = true;
+            citationHint.Text = "0 条引用"; citationLayout.Controls.Add(citationHint, 0, 2);
+            progress.Dock = DockStyle.Fill; progress.Margin = Padding.Empty; progress.Visible = false;
+            workspaceLayout.Controls.Add(progress, 0, 2);
 
-            var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(0, 12, 0, 0), Margin = Padding.Empty };
-            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 7));
-            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-            footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            progress.Dock = DockStyle.Fill; progress.Margin = Padding.Empty;
-            summary.Dock = DockStyle.Fill; summary.Text = "准备就绪"; summary.Font = new Font(Font, FontStyle.Bold); summary.TextAlign = ContentAlignment.MiddleLeft;
-            status.Dock = DockStyle.Fill; status.Text = "公开论文 PDF · 本地保存 · 无需账号"; status.ForeColor = Muted; status.AutoEllipsis = true;
-            footer.Controls.Add(progress, 0, 0); footer.Controls.Add(summary, 0, 1); footer.Controls.Add(status, 0, 2);
-            root.Controls.Add(footer, 0, 4);
+            var footer = MakeLayout(2, 1);
+            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 318)); footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            summary.Dock = DockStyle.Fill; summary.Text = "就绪"; summary.ForeColor = Muted; summary.Font = new Font(Font.FontFamily, 8F); summary.TextAlign = ContentAlignment.MiddleLeft;
+            status.Dock = DockStyle.Fill; status.Text = ""; status.ForeColor = Muted; status.Font = new Font(Font.FontFamily, 8F); status.AutoEllipsis = true; status.TextAlign = ContentAlignment.MiddleRight;
+            footer.Controls.Add(summary, 0, 0); footer.Controls.Add(status, 1, 0); root.Controls.Add(footer, 0, 2);
 
             downloadButton.Click += async delegate { await RunAsync(false, null); };
             citeButton.Click += async delegate { await RunAsync(true, null); };
             retryButton.Click += async delegate { await RunAsync(lastWasCitation, failed.ToArray()); };
-            cancelButton.Click += delegate { if (cancellation != null) cancellation.Cancel(); cancelButton.Enabled = false; status.Text = "正在取消，已完成的文件会保留…"; };
-            browseButton.Click += delegate { ChooseFolder(); };
-            openFolder.Click += delegate { OpenOutputFolder(); };
+            cancelButton.Click += delegate { if (cancellation != null) cancellation.Cancel(); cancelButton.Enabled = false; summary.Text = "正在取消…"; };
+            browseButton.Click += delegate { ChooseFolder(); }; openFolder.Click += delegate { OpenOutputFolder(); };
             pasteButton.Click += delegate { try { if (Clipboard.ContainsText()) { links.SelectedText = Clipboard.GetText(); links.Focus(); } } catch (Exception ex) { ShowError(ex.Message); } };
             exampleButton.Click += delegate { links.Text = "https://arxiv.org/abs/1706.03762\r\nhttps://inspirehep.net/literature/451647"; links.Focus(); };
+            taskTab.Click += delegate { SelectView(false); }; citationTab.Click += delegate { SelectView(true); };
             citationFormat.SelectedIndexChanged += delegate { RefreshCitationText(); };
-            copyButton.Click += delegate { try { Clipboard.SetText(citationText.Text); status.Text = "已复制，可直接粘贴到 Overleaf。"; } catch (Exception ex) { ShowError(ex.Message); } };
+            copyButton.Click += delegate { try { Clipboard.SetText(citationText.Text); status.Text = "已复制引用"; } catch (Exception ex) { ShowError(ex.Message); } };
             saveButton.Click += delegate { ExportCitation(); };
+            detailsButton.Click += delegate { if (grid.SelectedRows.Count > 0) OpenRow(grid.SelectedRows[0].Index); };
             grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e) { OpenRow(e.RowIndex); };
-            grid.SelectionChanged += delegate { if (!busy && grid.SelectedRows.Count > 0) { var row = grid.SelectedRows[0].Tag as RowData; if (row != null && !String.IsNullOrEmpty(row.Detail)) { status.Text = row.Detail; tooltips.SetToolTip(status, row.Detail); } } };
-            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy) { e.Cancel = true; closeAfterCancel = true; if (cancellation != null) cancellation.Cancel(); status.Text = "正在取消任务并关闭…"; } };
+            grid.SelectionChanged += delegate
+            {
+                RowData row = grid.SelectedRows.Count == 0 ? null : grid.SelectedRows[0].Tag as RowData;
+                detailsButton.Enabled = row != null && (!String.IsNullOrEmpty(row.FilePath) || !String.IsNullOrEmpty(row.Detail));
+                detailsButton.Text = row != null && !String.IsNullOrEmpty(row.FilePath) ? "打开 PDF" : "查看详情";
+                if (!busy && row != null && !String.IsNullOrEmpty(row.Detail)) { status.Text = row.Detail; tooltips.SetToolTip(status, row.Detail); }
+            };
+            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy) { e.Cancel = true; closeAfterCancel = true; if (cancellation != null) cancellation.Cancel(); summary.Text = "正在关闭…"; } };
             FormClosed += delegate { downloader.Dispose(); citer.Dispose(); tooltips.Dispose(); };
-            Shown += delegate { links.Focus(); };
+            Shown += delegate
+            {
+                UpdateMetrics();
+                Rectangle area = Screen.FromControl(this).WorkingArea;
+                MinimumSize = new Size(Math.Min(MinimumSize.Width, area.Width), Math.Min(MinimumSize.Height, area.Height));
+                if (Width > area.Width || Height > area.Height) { Size = new Size(Math.Min(Width, area.Width), Math.Min(Height, area.Height)); CenterToScreen(); }
+                ArrangeCanvas();
+                // Keep the empty input cue visible until the user starts typing.
+                ActiveControl = pasteButton;
+            };
+            viewport.SizeChanged += delegate { ArrangeCanvas(); };
+            KeyDown += async delegate(object sender, KeyEventArgs e)
+            {
+                if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; e.Handled = true; if (!busy) await RunAsync(e.Shift, null); }
+            };
+            SelectView(false);
+            ArrangeCanvas();
         }
 
         private void BuildGrid()
@@ -241,17 +294,20 @@ namespace PaperDrop
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
-            grid.GridColor = Color.FromArgb(237, 242, 243);
+            grid.GridColor = Color.FromArgb(238, 242, 239);
             grid.EnableHeadersVisualStyles = false;
-            grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(242, 247, 247), ForeColor = Muted, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(9, 0, 0, 0), SelectionBackColor = Color.FromArgb(242, 247, 247) };
-            grid.ColumnHeadersHeight = 34;
+            grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = UiTheme.Soft, ForeColor = Muted, Font = new Font(Font.FontFamily, 8F), Padding = new Padding(9, 0, 0, 0), SelectionBackColor = UiTheme.Soft };
+            grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+            grid.ColumnHeadersHeight = 32;
             grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-            grid.DefaultCellStyle = new DataGridViewCellStyle { ForeColor = Ink, SelectionBackColor = Color.FromArgb(227, 241, 236), SelectionForeColor = Ink, Padding = new Padding(9, 0, 0, 0) };
-            grid.RowTemplate.Height = 37;
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "source", HeaderText = "来源", FillWeight = 12, MinimumWidth = 85 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "paper", HeaderText = "论文 / 链接", FillWeight = 58, MinimumWidth = 200 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "state", HeaderText = "状态", FillWeight = 30, MinimumWidth = 160 });
+            grid.DefaultCellStyle = new DataGridViewCellStyle { ForeColor = Muted, SelectionBackColor = Color.FromArgb(242, 247, 244), SelectionForeColor = Ink, Padding = new Padding(9, 0, 0, 0) };
+            grid.RowTemplate.Height = 62;
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "source", HeaderText = "来源", AutoSizeMode = DataGridViewAutoSizeColumnMode.None, Width = 80, MinimumWidth = 50 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "paper", HeaderText = "论文", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 120 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "state", HeaderText = "状态", AutoSizeMode = DataGridViewAutoSizeColumnMode.None, Width = 100, MinimumWidth = 70 });
             foreach (DataGridViewColumn col in grid.Columns) col.SortMode = DataGridViewColumnSortMode.NotSortable;
+            grid.CellPainting += PaintGridCell;
+            grid.AccessibleName = "任务列表，双击查看文件或详情";
         }
 
         private async Task RunAsync(bool makeCitations, string[] retryInputs)
@@ -268,7 +324,9 @@ namespace PaperDrop
             }
             bool appendCitations = makeCitations && retryInputs != null;
             if (makeCitations && !appendCitations) citations.Clear();
-            failed.Clear(); grid.Rows.Clear();
+            failed.Clear(); grid.Rows.Clear(); taskEmpty.Visible = false;
+            taskCount.Text = inputs.Length + " 个任务";
+            status.Text = "";
             foreach (string input in inputs)
             {
                 string kind = "—";
@@ -278,9 +336,9 @@ namespace PaperDrop
                 grid.Rows[index].Cells[1].ToolTipText = input;
             }
             lastWasCitation = makeCitations;
-            tabs.SelectedIndex = makeCitations ? 1 : 0;
-            if (makeCitations) RefreshCitationText();
+            SelectView(makeCitations);
             SetBusy(true);
+            if (makeCitations) RefreshCitationText();
             cancellation = new CancellationTokenSource();
             CancellationToken token = cancellation.Token;
             int succeeded = 0, skipped = 0, errors = 0, finished = 0;
@@ -347,9 +405,11 @@ namespace PaperDrop
                     progress.Style = ProgressBarStyle.Continuous; progress.Value = finished * 100 / inputs.Length;
                 }
                 for (int i = finished; i < inputs.Length; i++) { var data = (RowData)grid.Rows[i].Tag; data.State = "cancelled"; SetRow(grid.Rows[i], "未开始 · 已取消", Muted); failed.Add(inputs[i]); }
-                summary.Text = String.Format("{0}  ·  成功 {1}  /  跳过 {2}  /  失败 {3}{4}", token.IsCancellationRequested ? "任务已取消" : "处理完成", succeeded, skipped, errors, token.IsCancellationRequested ? "  /  未完成 " + (inputs.Length - succeeded - skipped - errors) : "");
-                status.Text = makeCitations ? (citations.Count > 0 ? "已生成 " + citations.Count + " 条引用；可复制、导出，或查看 Overleaf 使用示例。" : "未能生成引用，请在下载列表中查看具体原因。") : (failed.Count > 0 ? "可点击「重试失败项」继续；双击失败条目查看完整原因。" : "文件已保存到：" + destination);
-                if (makeCitations && errors > 0) { citationHint.Text = "有 " + errors + " 项未成功。切换「下载列表」查看原因，或点击「重试失败项」。"; if (citations.Count == 0) tabs.SelectedIndex = 0; }
+                summary.Text = String.Format("{0} {1} · 跳过 {2} · 失败 {3}", token.IsCancellationRequested ? "已取消 / 完成" : "完成", succeeded, skipped, errors);
+                taskCount.Text = inputs.Length + " 个任务" + (failed.Count > 0 ? " · " + failed.Count + " 项可重试" : " · 全部完成");
+                status.Text = makeCitations ? (citations.Count > 0 ? "已生成 " + citations.Count + " 条引用" : "选择失败任务查看原因") : (failed.Count > 0 ? "选择失败任务查看原因" : destination);
+                tooltips.SetToolTip(status, status.Text);
+                if (makeCitations && errors > 0) { citationHint.Text = citations.Count + " 条引用 · " + errors + " 项失败，可在任务中查看"; if (citations.Count == 0) SelectView(false); }
             }
             finally
             {
@@ -358,6 +418,7 @@ namespace PaperDrop
                 if (!token.IsCancellationRequested) progress.Value = 100;
                 cancellation.Dispose(); cancellation = null;
                 SetBusy(false);
+                if (citations.Count == 0) RefreshCitationText();
                 if (closeAfterCancel) Close();
             }
         }
@@ -366,11 +427,20 @@ namespace PaperDrop
         {
             copyButton.Enabled = citations.Count > 0;
             saveButton.Enabled = citations.Count > 0;
-            if (citations.Count == 0) { citationText.Text = busy ? "正在获取论文元数据，请稍候…" : "点击「生成 LaTeX 引用」，结果会显示在这里。"; return; }
+            citationTab.Text = citations.Count == 0 ? "引用" : "引用 " + citations.Count;
+            citationEmpty.Visible = citations.Count == 0;
+            if (citations.Count == 0)
+            {
+                bool generating = busy && lastWasCitation;
+                citationText.Clear(); citationEmpty.Heading = generating ? "正在生成引用" : "引用会显示在这里";
+                citationEmpty.Hint = generating ? "正在读取论文信息…" : "支持 BibTeX、\\bibitem 和 Overleaf 示例。";
+                citationEmpty.Invalidate(); citationEmpty.BringToFront(); citationHint.Text = "0 条引用"; return;
+            }
             if (citationFormat.SelectedIndex == 0) citationText.Text = String.Join("\r\n\r\n", citations.Select(c => c.BibTeX.Trim()).ToArray()) + "\r\n";
             else if (citationFormat.SelectedIndex == 1) citationText.Text = "% 在导言区加入：\\usepackage[hidelinks]{hyperref}\r\n% 若标题含数学公式，还需：\\usepackage{amsmath,amssymb}\r\n% 正文中引用：\\cite{" + citations[0].Key + "}\r\n\r\n\\begin{thebibliography}{99}\r\n\r\n" + String.Join("\r\n\r\n", citations.Select(c => c.BibItem.Trim()).ToArray()) + "\r\n\r\n\\end{thebibliography}\r\n";
             else citationText.Text = "% 1. 将「BibTeX」内容保存为 references.bib，并上传至 Overleaf。\r\n% 2. 下方示例使用 biblatex + Biber，可点击 DOI / URL。\r\n% 3. 如果期刊模板已使用 BibTeX/natbib，请沿用模板，勿混用 biblatex。\r\n% 4. 已有文档只需合并相应导言区设置和正文命令。\r\n\r\n\\documentclass{article}\r\n\\usepackage{amsmath,amssymb}\r\n\\usepackage[backend=biber,style=numeric,sorting=none,url=true,doi=true]{biblatex}\r\n\\addbibresource{references.bib}\r\n\\usepackage[hidelinks]{hyperref}\r\n\r\n\\begin{document}\r\nSee \\cite{" + String.Join(",", citations.Select(c => c.Key).ToArray()) + "}.\r\n\r\n\\printbibliography\r\n\\end{document}\r\n";
-            citationHint.Text = citationFormat.SelectedIndex == 1 ? "标题包含可点击的超链接。若文档已有 thebibliography 环境，只复制其中的条目。" : "BibTeX 的链接显示由模板决定；「Overleaf 使用示例」提供可点击 DOI / URL 的配置。";
+            citationHint.Text = citations.Count + " 条引用" + (citationFormat.SelectedIndex == 1 ? " · 标题可点击" : citationFormat.SelectedIndex == 2 ? " · BibLaTeX / Biber" : " · references.bib");
+            tooltips.SetToolTip(citationHint, citationFormat.SelectedIndex == 1 ? "如果文档已有 thebibliography 环境，只复制其中的条目。" : "BibTeX 的链接显示由模板决定，Overleaf 示例提供可点击 DOI / URL 的配置。");
         }
 
         private void ExportCitation()
@@ -389,6 +459,7 @@ namespace PaperDrop
         private void SetBusy(bool value)
         {
             busy = value;
+            progress.Visible = value;
             foreach (Control control in new Control[] { links, folder, browseButton, pasteButton, exampleButton, downloadButton, citeButton }) control.Enabled = !value;
             cancelButton.Enabled = value; retryButton.Enabled = !value && failed.Count > 0;
         }
@@ -430,35 +501,120 @@ namespace PaperDrop
 
         private void ShowError(string text) { MessageBox.Show(this, text, "PaperDrop", MessageBoxButtons.OK, MessageBoxIcon.Information); }
         private static string FormatBytes(long bytes) { return bytes < 1024 * 1024 ? (bytes / 1024D).ToString("0.0") + " KB" : (bytes / 1048576D).ToString("0.0") + " MB"; }
-        private static void SetRow(DataGridViewRow row, string text, Color color) { row.Cells[2].Value = text; row.Cells[2].ToolTipText = text; row.Cells[2].Style.ForeColor = color; }
-        private static Label MakeLabel(string text, int x, int y, int w, int h, float size, bool bold, Color color) { return new Label { Text = text, Location = new Point(x, y), Size = new Size(w, h), ForeColor = color, Font = new Font("Microsoft YaHei UI", size, bold ? FontStyle.Bold : FontStyle.Regular) }; }
-        private static Button MakeButton(string text, bool primary)
+        private void SetRow(DataGridViewRow row, string text, Color color)
         {
-            var button = new Button { Text = text, Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, BackColor = primary ? Accent : Color.White, ForeColor = primary ? Color.White : Ink, Margin = new Padding(3, 0, 3, 3), UseVisualStyleBackColor = false, Font = new Font("Microsoft YaHei UI", 9F), TabStop = true };
-            button.FlatAppearance.BorderColor = primary ? Accent : Border;
-            button.FlatAppearance.BorderSize = 1;
-            button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(13, 91, 77) : Color.FromArgb(235, 246, 241);
-            return button;
+            var data = row.Tag as RowData;
+            string label = text;
+            if (data != null)
+            {
+                if (data.State == "failed") label = "失败";
+                else if (data.State == "cancelled") label = "已取消";
+                else if (data.State == "running") label = text.Contains("下载") ? "下载中" : text.Contains("重试") ? "重试中" : "解析中";
+                else if (data.State == "success") label = text.Contains("跳过") ? "已跳过" : text.Contains("合并") ? "已合并" : text.Contains("引用") ? "已生成" : "已完成";
+                if (row.Selected)
+                {
+                    detailsButton.Enabled = !String.IsNullOrEmpty(data.FilePath) || !String.IsNullOrEmpty(data.Detail);
+                    detailsButton.Text = !String.IsNullOrEmpty(data.FilePath) ? "打开 PDF" : "查看详情";
+                }
+            }
+            row.Cells[2].Value = label; row.Cells[2].ToolTipText = text; row.Cells[2].Style.ForeColor = color;
+            grid.InvalidateRow(row.Index);
+        }
+        private static ActionButton MakeButton(string text, ButtonTone tone)
+        { return new ActionButton { Text = text, Tone = tone, AccessibleName = text }; }
+
+        private static TableLayoutPanel MakeLayout(int columns, int rows)
+        { return new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Margin = Padding.Empty, Padding = Padding.Empty }; }
+
+        private static Label LabelFor(string text, float size, bool bold)
+        { return new Label { Text = text, Dock = DockStyle.Fill, Margin = Padding.Empty, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Ink, Font = new Font("Microsoft YaHei UI", size, bold ? FontStyle.Bold : FontStyle.Regular), AutoEllipsis = true }; }
+
+        private void SelectView(bool showCitations)
+        {
+            tasksView.Visible = !showCitations; citationsView.Visible = showCitations;
+            if (showCitations) citationsView.BringToFront(); else tasksView.BringToFront();
+            taskTab.Selected = !showCitations; citationTab.Selected = showCitations;
+        }
+
+        private void UpdateMetrics()
+        {
+            float scale;
+            using (Graphics g = CreateGraphics()) scale = g.DpiX / 96F;
+            displayScale = scale;
+            grid.RowTemplate.Height = (int)(62 * scale);
+            foreach (DataGridViewRow row in grid.Rows) row.Height = grid.RowTemplate.Height;
+            grid.ColumnHeadersHeight = (int)(32 * scale);
+            grid.Columns[0].Width = (int)(80 * scale);
+            grid.Columns[2].Width = (int)(100 * scale);
+            grid.Columns[1].MinimumWidth = (int)(120 * scale);
+        }
+
+        private void ArrangeCanvas()
+        {
+            if (arrangingCanvas || rootLayout == null) return;
+            arrangingCanvas = true;
+            try
+            {
+                // On very small work areas a scrollable canvas keeps every action reachable.
+                Size minimum = new Size((int)(900 * displayScale), (int)(580 * displayScale));
+                viewport.AutoScrollMinSize = minimum;
+                rootLayout.Location = viewport.AutoScrollPosition;
+                rootLayout.Size = new Size(Math.Max(viewport.ClientSize.Width, minimum.Width), Math.Max(viewport.ClientSize.Height, minimum.Height));
+            }
+            finally { arrangingCanvas = false; }
+        }
+
+        private void PaintGridCell(object sender, DataGridViewCellPaintingEventArgs e)
+        {
+            if (e.RowIndex < 0 || (e.ColumnIndex != 1 && e.ColumnIndex != 2)) return;
+            e.PaintBackground(e.CellBounds, true);
+            float scale = e.Graphics.DpiX / 96F;
+            var data = grid.Rows[e.RowIndex].Tag as RowData;
+            int pad = (int)(10 * scale);
+            if (e.ColumnIndex == 1)
+            {
+                string title = Convert.ToString(e.FormattedValue);
+                string subtitle = data == null ? "" : data.Input;
+                Rectangle first = new Rectangle(e.CellBounds.X + pad, e.CellBounds.Y + (int)(11 * scale), e.CellBounds.Width - pad * 2, (int)(22 * scale));
+                Rectangle second = new Rectangle(e.CellBounds.X + pad, e.CellBounds.Y + (int)(35 * scale), e.CellBounds.Width - pad * 2, (int)(18 * scale));
+                TextRenderer.DrawText(e.Graphics, title, Font, first, Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+                using (var small = new Font(Font.FontFamily, 8F))
+                    TextRenderer.DrawText(e.Graphics, subtitle == title ? "" : subtitle, small, second, Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            }
+            else
+            {
+                string state = data == null ? "" : data.State;
+                Color fill = Color.FromArgb(242, 245, 243), color = Muted;
+                if (state == "success") { fill = Color.FromArgb(232, 244, 236); color = Color.FromArgb(39, 111, 77); }
+                else if (state == "running") { fill = Color.FromArgb(231, 241, 244); color = Color.FromArgb(41, 105, 121); }
+                else if (state == "failed") { fill = Color.FromArgb(251, 235, 232); color = Color.FromArgb(167, 66, 49); }
+                var badge = new RectangleF(e.CellBounds.X + 6 * scale, e.CellBounds.Y + (e.CellBounds.Height - 26 * scale) / 2, Math.Min(e.CellBounds.Width - 12 * scale, 82 * scale), 26 * scale);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (GraphicsPath path = UiTheme.Rounded(badge, 6 * scale))
+                using (var brush = new SolidBrush(fill)) e.Graphics.FillPath(brush, path);
+                using (var small = new Font(Font.FontFamily, 8F))
+                    TextRenderer.DrawText(e.Graphics, Convert.ToString(e.FormattedValue), small, Rectangle.Round(badge), color, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+            using (var line = new Pen(Color.FromArgb(238, 242, 239))) e.Graphics.DrawLine(line, e.CellBounds.Left, e.CellBounds.Bottom - 1, e.CellBounds.Right, e.CellBounds.Bottom - 1);
+            e.Handled = true;
+        }
+
+        private void ShowHelp()
+        {
+            MessageBox.Show(this,
+                "支持的输入\r\n\r\n" +
+                "• arXiv 链接或编号，如 1706.03762\r\n" +
+                "• INSPIRE 单篇论文链接\r\n" +
+                "• DOI，如 10.4310/ATMP.1998.v2.n2.a1\r\n" +
+                "• 公开 PDF 直链（仅下载）\r\n\r\n" +
+                "每行一篇，最多 200 篇。DOI 通过 INSPIRE 查找。\r\n" +
+                "已有完整 PDF 会跳过；双击完成的任务打开文件。\r\n\r\n" +
+                "Ctrl + Enter：下载 PDF\r\n" +
+                "Ctrl + Shift + Enter：生成引用\r\n\r\n" +
+                "引用格式可在「引用」页切换。Overleaf 示例包含完整用法。",
+                "使用帮助", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private sealed class RowData { public string Input, State, FilePath, Detail; }
-    }
-
-    internal sealed class CardPanel : Panel
-    {
-        public CardPanel() { BackColor = Color.White; DoubleBuffered = true; }
-        protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using (var p = new Pen(Color.FromArgb(221, 229, 232))) e.Graphics.DrawRectangle(p, 0, 0, Width - 1, Height - 1); }
-    }
-
-    internal sealed class BrandMark : Control
-    {
-        public BrandMark() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true); }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-            float s = Math.Min(Width, Height) / 50F; g.ScaleTransform(s, s);
-            using (var brush = new SolidBrush(Color.FromArgb(18, 111, 94))) g.FillEllipse(brush, 0, 0, 49, 49);
-            using (var pen = new Pen(Color.White, 2.4F)) { pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round; g.DrawLines(pen, new[] { new PointF(17, 12), new PointF(29, 12), new PointF(35, 18), new PointF(35, 37), new PointF(16, 37), new PointF(16, 12) }); g.DrawLine(pen, 25, 20, 25, 31); g.DrawLines(pen, new[] { new PointF(21, 27), new PointF(25, 31), new PointF(29, 27) }); }
-        }
     }
 }

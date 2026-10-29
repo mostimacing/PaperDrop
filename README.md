@@ -4,6 +4,8 @@
 
 ## 下载与使用
 
+当前版本：**1.1.0**。新版采用双栏界面，左侧输入与操作，右侧切换任务和引用；支持状态标签、失败重试、复制与导出。
+
 运行环境：Windows 10 / 11，.NET Framework 4.8。使用 App 无需 Python、命令行或账号。
 
 1. 下载 [PaperDrop.exe](./PaperDrop.exe?raw=true)，或使用仓库的 **Code → Download ZIP** 后解压。
@@ -33,6 +35,7 @@ INSPIRE 下载优先使用关联的 arXiv 全文，失败后尝试记录中的�
 - 跳过已有完整 PDF，保留同名损坏文件并使用另一个文件名保存。
 - 检查 PDF 首尾标记与传输长度，避免把登录页或错误页保存为论文。
 - 从 arXiv / INSPIRE 结构化元数据生成引用，支持复制和导出。
+- 快捷键：`Ctrl + Enter` 下载，`Ctrl + Shift + Enter` 生成引用。
 - 使用 Windows 系统代理及正常 HTTPS 证书校验。
 
 ## Overleaf / LaTeX 引用
