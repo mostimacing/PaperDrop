@@ -1,0 +1,21 @@
+# Local preferences and downloaded papers
+preferences.txt
+*.pdf
+*.part
+
+# Build and test output (keep the portable app)
+*.exe
+!/PaperDrop.exe
+*.dll
+*.pdb
+bin/
+obj/
+test-artifacts/
+engine-test-data/
+*.log
+
+# Editor and Windows metadata
+.vs/
+.vscode/
+Thumbs.db
+Desktop.ini
